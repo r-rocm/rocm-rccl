@@ -1,0 +1,14 @@
+root: index
+subtrees:
+
+- caption: API reference 
+  entries:
+  - file: api-reference/library-specification
+    title: Library specification
+  - file: api-reference/api-library
+  
+- caption: About
+  entries:
+  - file: license
+  - file: attributions
+
