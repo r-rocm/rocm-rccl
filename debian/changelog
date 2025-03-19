@@ -1,4 +1,4 @@
-rccl (6.2.4-1) unstable; urgency=medium
+rocm-rccl (6.2.4-1) unstable; urgency=medium
 
   * Initial release.
 
