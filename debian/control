@@ -1,4 +1,4 @@
-Source: rccl
+Source: rocm-rccl
 Section: devel
 Priority: optional
 Maintainer: CHEN Xuan <chenxuan@iscas.ac.cn>
@@ -15,7 +15,7 @@ Homepage: https://github.com/ROCm/rccl
 Vcs-Browser: https://github.com/r-rocm/rocm-rccl
 Vcs-Git: https://github.com/r-rocm/rocm-rccl.git
 
-Package: rccl
+Package: rocm-rccl
 Architecture: any
 Depends:
  ${shlibs:Depends},
