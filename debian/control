@@ -7,9 +7,10 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  rocm-env,
-# rocm-llvm, (wait to be done)
+ rocm-llvm,
  rocm-smi-lib,
  rocm-hipify-clang,
+ libgtest-dev,
 Standards-Version: 4.7.0
 Homepage: https://github.com/ROCm/rccl
 Vcs-Browser: https://github.com/r-rocm/rocm-rccl
