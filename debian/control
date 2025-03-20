@@ -7,6 +7,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  rocm-cmake,
+ rocm-core-rocm,
  rocm-env,
  rocm-hipify-clang,
  rocm-llvm,
