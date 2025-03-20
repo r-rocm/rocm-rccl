@@ -33,6 +33,7 @@ override_dh_auto_configure:
 		-DAMDGPU_TARGETS=$(GPU_TARGETS) \
 		-DBUILD_ADDRESS_SANITIZER=FALSE \
 		-DBUILD_TESTS=ON \
+		-DROCM_PATH=$(ROCM_PATH) \
 		-DROCM_PATCH_VERSION=60204 
 
 override_dh_auto_build:
