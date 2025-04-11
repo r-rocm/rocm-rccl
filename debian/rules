@@ -22,7 +22,9 @@ REVYOS_ROCM_CMAKE_PARAMS += -DCMAKE_CXX_COMPILER=$(ROCM_PATH)/bin/hipcc
 REVYOS_ROCM_CMAKE_PARAMS += -DCMAKE_VERBOSE_MAKEFILE=TRUE
 REVYOS_ROCM_CMAKE_PARAMS += -DCMAKE_PREFIX_PATH="${ROCM_PATH};${ROCM_PATH}/share/rocm/cmake/;${ROCM_PATH}/share/rocmcmakebuildtools/cmake"
 
-GPU_TARGETS="gfx908:xnack-;gfx90a:xnack-;gfx90a:xnack+;gfx940;gfx941;gfx942;gfx1030;gfx1100"
+# GPU_TARGETS="gfx908:xnack-;gfx90a:xnack-;gfx90a:xnack+;gfx940;gfx941;gfx942;gfx1030;gfx1100"
+# Tailor target list to accelerate the build proccess.
+GPU_TARGETS="gfx942"
 
 %:
 	dh $@
