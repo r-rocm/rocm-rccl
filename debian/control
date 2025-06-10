@@ -7,12 +7,12 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  rocm-cmake,
- rocm-core-rocm,
+ rocm-core,
  rocm-env,
  rocm-hip-on-rocclr-dev,
  rocm-hipify-clang-dev,
  rocm-llvm,
- rocm-smi-lib,
+ rocm-smi-lib-dev,
  libgtest-dev,
 Standards-Version: 4.7.0
 Homepage: https://github.com/ROCm/rccl
@@ -24,8 +24,15 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
- rocm-hipify-clang-dev,
+ rocm-hip-on-rocclr,
+ rocm-hipify-clang,
  rocm-smi-lib,
-Description: HIPIFY: Convert CUDA to Portable C++ Code.
- HIPIFY is a set of tools that you can use to automatically translate CUDA
- source code into portable HIP C++.
+Description: ROCm Communication Collectives Library
+ RCCL (pronounced "Rickle") is a stand-alone library of standard collective
+ communication routines for GPUs, implementing all-reduce, all-gather, reduce,
+ broadcast, reduce-scatter, gather, scatter, and all-to-all. There is also
+ initial support for direct GPU-to-GPU send and receive operations. It has been
+ optimized to achieve high bandwidth on platforms using PCIe, xGMI as well as
+ networking using InfiniBand Verbs or TCP/IP sockets. RCCL supports an arbitrary
+ number of GPUs installed in a single node or multiple nodes, and can be used in
+ either single- or multi-process (e.g., MPI) applications.
