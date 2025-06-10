@@ -12,6 +12,7 @@ Build-Depends:
  rocm-hip-on-rocclr-dev,
  rocm-hipify-clang-dev,
  rocm-llvm,
+ rocm-rocminfo,
  rocm-smi-lib-dev,
  libgtest-dev,
 Standards-Version: 4.7.0
@@ -24,8 +25,11 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
+ rocm-core,
+ rocm-env,
  rocm-hip-on-rocclr,
  rocm-hipify-clang,
+ rocm-rocminfo,
  rocm-smi-lib,
 Description: ROCm Communication Collectives Library
  RCCL (pronounced "Rickle") is a stand-alone library of standard collective
