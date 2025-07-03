@@ -23,9 +23,6 @@ REVYOS_ROCM_CMAKE_PARAMS += -DCMAKE_VERBOSE_MAKEFILE=TRUE
 REVYOS_ROCM_CMAKE_PARAMS += -DCMAKE_PREFIX_PATH="${ROCM_PATH};${ROCM_PATH}/share/rocm/cmake/;${ROCM_PATH}/share/rocmcmakebuildtools/cmake"
 
 # GPU_TARGETS="gfx908:xnack-;gfx90a:xnack-;gfx90a:xnack+;gfx940;gfx941;gfx942;gfx1030;gfx1100"
-# Tailor target list to accelerate the build proccess.
-# GPU_TARGETS="gfx942"
-GPU_TARGETS="gfx1030;gfx1100"
 
 %:
 	dh $@
@@ -33,7 +30,6 @@ GPU_TARGETS="gfx1030;gfx1100"
 override_dh_auto_configure:
 	cmake $(REVYOS_ROCM_CMAKE_PARAMS) \
 		-DHIP_COMPILER=clang \
-		-DAMDGPU_TARGETS=$(GPU_TARGETS) \
 		-DBUILD_ADDRESS_SANITIZER=FALSE \
 		-DBUILD_TESTS=ON \
 		-DROCM_PATH=$(ROCM_PATH) \
