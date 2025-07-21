@@ -17,8 +17,8 @@ Build-Depends:
  libgtest-dev,
 Standards-Version: 4.7.0
 Homepage: https://github.com/ROCm/rccl
-Vcs-Browser: https://github.com/r-rocm/rocm-rccl
-Vcs-Git: https://github.com/r-rocm/rocm-rccl.git
+Vcs-Browser: https://github.com/revyos-rocm/rocm-rccl
+Vcs-Git: https://github.com/revyos-rocm/rocm-rccl.git
 
 Package: rocm-rccl
 Architecture: any

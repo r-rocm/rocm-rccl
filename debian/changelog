@@ -1,3 +1,9 @@
+rocm-rccl (6.4.1-1) trixie; urgency=medium
+
+  * Release 6.4.1-1
+
+ --  <chenxuan@iscas.ac.cn>  Mon, 21 Jul 2025 11:47:36 +0800
+
 rocm-rccl (6.2.4-3) unstable; urgency=medium
 
   * Rebuild for new Trixie base.
