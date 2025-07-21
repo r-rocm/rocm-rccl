@@ -77,7 +77,8 @@ namespace RcclUnitTesting
                      bool   const useManagedMem = false,
                      int    const groupId  = -1,
                      int    const collId   = -1,
-                     int    const rank     = -1);
+                     int    const rank     = -1,
+                     bool   const userRegistered = false);
 
     // Initialize input and compute expected results
     // - requires that SetCollectiveArgs and AllocateMemory have already been called
@@ -135,9 +136,12 @@ namespace RcclUnitTesting
     // Helper function that splits up GPUs to the given number of processes
     static std::vector<std::vector<int>> GetDeviceIdsList(int const numProcesses,
                                                           int const numGpus,
-                                                          int const ranksPerGpu);
+                                                          int const ranksPerGpu,
+                                                          const std::vector<int>& gpuPriorityOrder);
+                                                          
     static std::vector<std::vector<int>> GetDeviceIdsList(int const numProcesses,
-                                                          int const numGpus);
+                                                          int const numGpus,
+                                                          const std::vector<int>& gpuPriorityOrder);
 
     // Generate a test case name
     static std::string GetTestCaseName(int            const totalRanks,
@@ -159,7 +163,8 @@ namespace RcclUnitTesting
                         std::vector<int>            const& numElements,
                         std::vector<bool>           const& inPlaceList,
                         std::vector<bool>           const& managedMemList,
-                        std::vector<bool>           const& useHipGraphList);
+                        std::vector<bool>           const& useHipGraphList,
+                        bool                        const& enableSweep = true);
 
     // Wait for user-input if in interactive mode
     void InteractiveWait(std::string message);

@@ -7,9 +7,10 @@
 #include <gtest/gtest.h>
 #include <rccl/rccl.h>
 
+#include "TestBed.hpp"
 #include "StandaloneUtils.hpp"
 
-namespace RcclUnitTesting 
+namespace RcclUnitTesting
 {
   /**
    * \brief Verify that each device is assigned to the right rank using ncclCommSplit API.
@@ -73,7 +74,7 @@ namespace RcclUnitTesting
     NCCLCHECK(ncclCommInitAll(comms.data(), numDevices, nullptr));
 
     // Split into new comms (all of the same color)
-    std::vector<ncclComm_t> subComms(numDevices);  
+    std::vector<ncclComm_t> subComms(numDevices);
     NCCLCHECK(ncclGroupStart());
     for (int localRank = 0; localRank < numDevices; localRank++)
       NCCLCHECK(ncclCommSplit(comms[localRank], 0, localRank, &subComms[localRank], NULL));
@@ -88,7 +89,7 @@ namespace RcclUnitTesting
       int subCommRank, subCommNRank;
       NCCLCHECK(ncclCommUserRank(subComms[i], &subCommRank));
       NCCLCHECK(ncclCommCount(subComms[i], &subCommNRank));
-          
+
       ASSERT_EQ(originalRank, subCommRank);
       ASSERT_EQ(originalNRank, subCommNRank);
     }
@@ -117,7 +118,7 @@ namespace RcclUnitTesting
     NCCLCHECK(ncclCommInitAll(comms.data(), numDevices, nullptr));
 
     // Split into new comms
-    int numReducedRanks = numDevices / 2; 
+    int numReducedRanks = numDevices / 2;
     std::vector<ncclComm_t> subComms(numDevices);
     NCCLCHECK(ncclGroupStart());
     for (int localRank = 0; localRank < numDevices; localRank++)
@@ -131,12 +132,12 @@ namespace RcclUnitTesting
       int originalRank, originalNRank;
       NCCLCHECK(ncclCommUserRank(comms[i], &originalRank));
       NCCLCHECK(ncclCommCount(comms[i], &originalNRank));
-        
+
       if (i < numReducedRanks) {
         int subCommRank, subCommNRank;
         NCCLCHECK(ncclCommUserRank(subComms[i], &subCommRank));
         NCCLCHECK(ncclCommCount(subComms[i], &subCommNRank));
-        
+
         ASSERT_EQ(originalRank, subCommRank);
         ASSERT_EQ(subCommNRank, numReducedRanks);
       } else {
@@ -150,7 +151,7 @@ namespace RcclUnitTesting
     for (auto& comm : comms)
       NCCLCHECK(ncclCommDestroy(comm));
   }
-  
+
   /**
    * \brief Verify there is no regression in timing for each protocol [LL, LL128, Simple]
    * ******************************************************************************************/
@@ -167,10 +168,14 @@ namespace RcclUnitTesting
     if (numGpus < 2) {
       GTEST_SKIP() << "This test requires at least 2 devices.";
     }
-
+    hipDeviceProp_t devProp;
+    HIPCALL(hipGetDeviceProperties(&devProp, 0));
     // Initialize RCCL
-    int numRanks = 2;
+    constexpr int numRanks = 2;
     std::vector<ncclComm_t> comms(numRanks);
+    std::vector<int*> gpuInput(numRanks);
+    std::vector<int*> gpuOutput(numRanks);
+    std::vector<hipStream_t> stream(numRanks);
 
     char *proto = std::getenv("NCCL_PROTO");
     const char* protocolList[3] = {"LL", "LL128", "Simple"};
@@ -178,7 +183,12 @@ namespace RcclUnitTesting
     for (auto p : protocolList)
     {
       usElapsed = 0;
-      setenv("NCCL_PROTO", p, 1);
+      if(strncmp("gfx12",devProp.gcnArchName,5) == 0) {
+        setenv("NCCL_PROTO", "Simple", 1);
+      } else {
+        setenv("NCCL_PROTO", p, 1);
+      }
+
       NCCLCHECK(ncclCommInitAll(comms.data(), numRanks, nullptr));
 
       // Prepare CPU data arrays
@@ -191,10 +201,6 @@ namespace RcclUnitTesting
       }
 
       // Prepare GPU data arrays
-      int* gpuInput[numRanks];
-      int* gpuOutput[numRanks];
-      hipStream_t stream[numRanks];
-
       for (int rank = 0; rank < numRanks; rank++) {
         HIPCALL(hipSetDevice(rank));
         HIPCALL(hipStreamCreate(&stream[rank]));
@@ -211,7 +217,7 @@ namespace RcclUnitTesting
           HIPCALL(hipSetDevice(rank));
           HIPCALL(hipMemset(gpuOutput[rank], 0, N * sizeof(int)));
           HIPCALL(hipDeviceSynchronize());
-	}
+        }
 
         // Initiate the allreduce
         NCCLCHECK(ncclGroupStart());
@@ -226,7 +232,7 @@ namespace RcclUnitTesting
           HIPCALL(hipStreamSynchronize(stream[rank]));
         }
 
-	if (iter >= 0)
+        if (iter >= 0)
           usElapsed += duration_cast<microseconds>(Clock::now() - start).count();
 
         // Check results
@@ -263,7 +269,7 @@ namespace RcclUnitTesting
     const char* mainKernel = "ncclDevKernel";
 
     // Look for the .co files
-    std::vector<std::string> coFileList = splitString(executeCommand("find ../ -type f -name \"*.co\""), '\n');
+    std::vector<std::string> coFileList = splitString(executeCommand("find ../ -type f -name \"librccl*.co\""), '\n');
 
     // Check if the .co files exist in the build directory
     if (coFileList.empty())

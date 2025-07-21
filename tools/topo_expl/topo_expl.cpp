@@ -159,6 +159,10 @@ NodeModelDesc model_descs[] = {
   {2, "topo_8p_940_16n.xml",    "2 nodes gfx940 16 NICs"},
   {2, "topo_8p1h_6.xml",        "2 nodes 8P1H Alt."},
   {5, "topo_8p_940.xml",        "5 nodes gfx940 8P"},
+  {2, "topo_8p_942.xml",        "2 nodes gfx942 8P"},
+  {2, "topo_8p_942_1.xml",      "2 nodes gfx942 8P Alt."},
+  {1, "topo_16p_gio-1s-1rp-cascade.xml", "GigaIO 16P gfx942"},
+  {1, "topo_16p_gio-3s-1rp-split-flat.xml", "GigaIO 16P gfx942 1rp-split"},
 };
 
 NCCL_PARAM(MaxCTAs, "MAX_CTAS", MAXCHANNELS);
@@ -175,7 +179,7 @@ int main(int argc,char* argv[])
     printf("Usage: ./topo_expl -m model_id [-n numNodes=1]\n");
     printf("List of model_id:\n");
     for (int i = 0; i < num_models; i++)
-      printf("  %d: %s\n", i, model_descs[i].description);
+      printf("  %d: %24s [%s]\n", i, model_descs[i].description, model_descs[i].filename);
     exit(0);
   }
 

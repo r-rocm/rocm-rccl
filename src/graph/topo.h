@@ -94,7 +94,8 @@ struct ncclTopoLink {
   float bw;
   struct ncclTopoNode* remNode;
 };
-#define NCCL_TOPO_MAX_LINKS 32
+#define NCCL_TOPO_MAX_LINKS 128
+
 #define NCCL_TOPO_MAX_HOPS (NCCL_TOPO_MAX_NODES*NCCL_TOPO_NODE_TYPES)
 
 struct ncclTopoLinkList {
@@ -109,12 +110,18 @@ struct ncclTopoLinkList {
 
 #define NCCL_TOPO_UNDEF (-1)
 
+#define NCCL_TOPO_ID_SYSTEM_ID(id) (id >> 56)
+#define NCCL_TOPO_ID_LOCAL_ID(id) (id & 0x00ffffffffffffff)
+#define NCCL_TOPO_ID(systemid, localid) (((int64_t)systemid << 56) + localid)
+
 #define RCCL_TOPO_CR8G      1
 #define RCCL_TOPO_4P2H_ROME 2
 #define RCCL_TOPO_GDR_ALL   4
 #define RCCL_TOPO_16P1H     8
 #define RCCL_TOPO_FORCE_INTRA 16
 #define RCCL_TOPO_XGMI_ALL  32
+
+#define GCN_ARCH_NAME_LEN 16
 
 struct ncclTopoNode {
   int type;
@@ -126,10 +133,12 @@ struct ncclTopoNode {
       int rank;
       int cudaCompCap;
       int gdrSupport;
-      const char* gcn;
+      char gcn[GCN_ARCH_NAME_LEN];
       hipDeviceArch_t arch;
+      int cu;
     }gpu;
     struct {
+      int dev; // Plugin dev number
       uint64_t asic;
       int port;
       float bw;
@@ -163,6 +172,9 @@ struct ncclTopoNodeSet {
 };
 
 struct ncclTopoSystem {
+  int systemId;
+  uint64_t hostHashes[NCCL_TOPO_MAX_NODES];
+  int nHosts;
   struct ncclTopoNodeSet nodes[NCCL_TOPO_NODE_TYPES];
   float maxBw;
   float totalBw;
@@ -178,9 +190,9 @@ struct ncclTopoSystem {
   float baseBw;
   bool mscclEnabled;
 
-  // [RCCL] Track hostIdx and number of hosts to support rail-optimized rings/trees
-  int nHosts;
+  // [RCCL] Track hostIdx to support rail-optimized rings/trees
   int hostIdx;
+  bool useRailOptimizedTrees;
 };
 
 ncclResult_t ncclTopoGetNode(struct ncclTopoSystem* system, struct ncclTopoNode** node, int type, uint64_t id);
@@ -189,9 +201,11 @@ ncclResult_t ncclTopoRemoveNode(struct ncclTopoSystem* system, int type, int id)
 ncclResult_t ncclTopoConnectNodes(struct ncclTopoNode* node, struct ncclTopoNode* remNode, int type, float bw);
 ncclResult_t ncclTopoPrintPaths(struct ncclTopoSystem* system);
 ncclResult_t ncclTopoLoadSystem(const char* xmlTopoFile, struct ncclTopoSystem* system);
-ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank, int netDev, int* intermediateRank);
+ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank, int64_t netId, int* intermediateRank);
 
-ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem** topoSystem);
+#define NCCL_TOPO_XML_MAX_NODES 8192
+#define NCCL_GRAPH_XML_MAX_NODES 8192
+ncclResult_t ncclTopoGetSystemFromXml(struct ncclXml* xml, struct ncclTopoSystem** topoSystem, uint64_t localHostHash);
 ncclResult_t ncclTopoGetGraphFromXml(struct ncclXmlNode *xmlGraphs, struct ncclTopoSystem* system, struct ncclTopoGraph* graph, int* nChannels);
 ncclResult_t ncclTopoGetXmlFromGraphs(int ngraphs, struct ncclTopoGraph** graphs, struct ncclTopoSystem* system, struct ncclXml *xml);
 
@@ -222,11 +236,24 @@ static ncclResult_t ncclTopoRankToIndex(struct ncclTopoSystem* system, int rank,
 static ncclResult_t ncclTopoDevToRank(struct ncclTopoSystem* system, int dev, int* rank) {
   *rank = -1;
   for (int i=0; i<system->nodes[GPU].count; i++) {
+    if (NCCL_TOPO_ID_SYSTEM_ID(system->nodes[GPU].nodes[i].id) != system->systemId) continue; // Only consider GPUs on our node
     if (system->nodes[GPU].nodes[i].gpu.dev == dev) {
       *rank = system->nodes[GPU].nodes[i].gpu.rank;
       return ncclSuccess;
     }
   }
+  return ncclInternalError;
+}
+
+static ncclResult_t ncclTopoIdToNetDev(struct ncclTopoSystem* system, int64_t id, int* netDev) {
+  *netDev = -1;
+  for (int i=0; i<system->nodes[NET].count; i++) {
+    if (system->nodes[NET].nodes[i].id == id) {
+      *netDev = system->nodes[NET].nodes[i].net.dev;
+      return ncclSuccess;
+    }
+  }
+  WARN("Could not find NET with id %lx", id);
   return ncclInternalError;
 }
 
@@ -239,12 +266,6 @@ static float ncclTopoXGMISpeed(const char* gcn) {
   else
     return VEGA_XGMI_WIDTH;
 }
-
-#if ENABLE_COLLTRACE
-  #define ncclGetKernelIndex(p_comm) ((p_comm)->collTraceThread ? 1 : 0)
-#else
-  #define ncclGetKernelIndex(p_comm) (0)
-#endif
 
 // Returns NVLink bw in GB/s
 static float ncclTopoNVLinkBw(int cudaCompCap) {

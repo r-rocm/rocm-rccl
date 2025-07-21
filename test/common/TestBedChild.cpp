@@ -8,20 +8,33 @@
 
 #include <thread>
 #include <execinfo.h>
+#ifdef ENABLE_OPENMP
+#include <omp.h>
+#endif
 
-#define CHILD_NCCL_CALL(cmd, msg)                                       \
-  {                                                                     \
+static int getThreadId()
+{
+  #ifdef ENABLE_OPENMP
+  return (int)omp_get_thread_num();
+  #else
+  return -1;
+  #endif
+}
+
+#define CHILD_NCCL_CALL_BASE(cmd, msg, RESULT, RESULT_ARGS...)          \
+  do {                                                                  \
     if (this->verbose) printf("[ NCCL CALL] " #cmd "\n");               \
     ncclResult_t status = cmd;                                          \
     if (status != ncclSuccess)                                          \
     {                                                                   \
       ERROR("Child process %d fails NCCL call %s with code %d\n", this->childId, msg, status); \
-      return TEST_FAIL;                                                 \
+      RESULT(TEST_FAIL, ##RESULT_ARGS);                                 \
     }                                                                   \
-  }
+  } while (false)
+#define CHILD_NCCL_CALL(cmd, msg) CHILD_NCCL_CALL_BASE(cmd, msg, RETURN_RESULT)
 
-#define CHILD_NCCL_CALL_NON_BLOCKING(msg, localRank)                  \
-  {                                                                   \
+#define CHILD_NCCL_CALL_NON_BLOCKING_BASE(msg, localRank, RESULT, RESULT_ARGS...) \
+  do {                                                                \
     unsigned long int loop_counter = 0;                               \
     ncclResult_t ncclAsyncErr;                                        \
     loop_counter = 0;                                                 \
@@ -34,20 +47,30 @@
     if (ncclAsyncErr != ncclSuccess)                                  \
     {                                                                 \
       ERROR("Child process %d fails NCCL call %s with code %d\n", this->childId, msg, ncclAsyncErr);  \
-      return TEST_FAIL;                                               \
+      RESULT(TEST_FAIL, ##RESULT_ARGS);                               \
     }                                                                 \
-  }
+  } while (false)
+#define CHILD_NCCL_CALL_NON_BLOCKING(msg, localRank) CHILD_NCCL_CALL_NON_BLOCKING_BASE(msg, localRank, RETURN_RESULT)
 
 #define PIPE_READ(val) \
   if (read(childReadFd, &val, sizeof(val)) != sizeof(val)) return TEST_FAIL;
 
+#ifdef ENABLE_OPENMP
+#define CHILD_NCCL_CALL_RANK(errCode, cmd, msg) CHILD_NCCL_CALL_BASE(cmd, msg, OMP_CANCEL_FOR, errCode)
+#define CHILD_NCCL_CALL_NON_BLOCKING_RANK(errCode, msg, localRank) CHILD_NCCL_CALL_NON_BLOCKING_BASE(msg, localRank, OMP_CANCEL_FOR, errCode)
+#else
+#define CHILD_NCCL_CALL_RANK(errCode, cmd, msg) CHILD_NCCL_CALL(cmd, msg)
+#define CHILD_NCCL_CALL_NON_BLOCKING_RANK(errCode, msg, localRank) CHILD_NCCL_CALL_NON_BLOCKING(msg, localRank)
+#endif
+
 namespace RcclUnitTesting
 {
-  TestBedChild::TestBedChild(int const childId, bool const verbose, int const printValues)
+  TestBedChild::TestBedChild(int const childId, bool const verbose, int const printValues, bool const useRankThreading)
   {
     this->childId = childId;
     this->verbose = verbose;
     this->printValues = printValues;
+    this->useRankThreading = useRankThreading;
   }
 
   int TestBedChild::InitPipes()
@@ -83,6 +106,9 @@ namespace RcclUnitTesting
 
     // Wait for commands from parent process
     if (verbose) INFO("Child %d enters execution loop\n", this->childId);
+    #ifndef ENABLE_OPENMP
+    if (verbose && useRankThreading) WARN("Multi-threaded ranks requires ENABLE_OPENMP to be defined\n");
+    #endif
     int command;
     while (read(childReadFd, &command, sizeof(command)) > 0)
     {
@@ -345,12 +371,14 @@ namespace RcclUnitTesting
     int    collId;
     bool   inPlace;
     bool   useManagedMem;
+    bool   userRegistered;
     int    groupId;
 
     PIPE_READ(globalRank);
     PIPE_READ(collId);
     PIPE_READ(inPlace);
     PIPE_READ(useManagedMem);
+    PIPE_READ(userRegistered);
     PIPE_READ(groupId);
 
     if (globalRank < this->rankOffset || (this->rankOffset + comms.size() <= globalRank))
@@ -366,11 +394,14 @@ namespace RcclUnitTesting
       if (collId == -1 || collId == collIdx)
       {
         CollectiveArgs& collArg = this->collArgs[groupId][localRank][collIdx];
-        CHECK_CALL(collArg.AllocateMem(inPlace, useManagedMem));
-        if (this->verbose) INFO("Rank %d on child %d allocates memory for collective %d in group %d on device %d (%s,%s) Input: %p Output %p\n",
+        CHECK_CALL(collArg.AllocateMem(inPlace, useManagedMem, userRegistered));
+        if (collArg.userRegistered && (collArg.funcType == ncclCollSend || collArg.funcType == ncclCollRecv))
+          CHILD_NCCL_CALL(ncclCommRegister(this->comms[localRank], collArg.inputGpu.ptr, collArg.numInputBytesAllocated, &(collArg.commRegHandle)),"ncclCommRegister");
+        if (this->verbose) INFO("Rank %d on child %d allocates memory for collective %d in group %d on device %d (%s,%s,%s) Input: %p Output %p\n",
                                 globalRank, this->childId, collIdx, groupId, this->deviceIds[localRank],
                                 inPlace ? "in-place" : "out-of-place",
                                 useManagedMem ? "managed" : "unmanaged",
+                                userRegistered ? "user registered buffer" : "internal copy",
                                 collArg.inputGpu.ptr,
                                 collArg.outputGpu.ptr);
       }
@@ -473,6 +504,8 @@ namespace RcclUnitTesting
       }
     }
 
+    int numThreadsToUse = this->useRankThreading ? numRanksToExecute : 1;
+
     // Start group call
     CHILD_NCCL_CALL(ncclGroupStart(), "ncclGroupStart");
 
@@ -480,11 +513,19 @@ namespace RcclUnitTesting
     for (int collId = 0; collId < this->numCollectivesInGroup[groupId]; ++collId)
     {
       // Loop over all local ranks
+      if (this->verbose && this->useRankThreading)
+        INFO("Group %d collective %d running %d threads\n", groupId, collId, numThreadsToUse);
+      ErrCode errCode = TEST_SUCCESS;
+      auto& errCodeVal = reinterpret_cast<int&>(errCode);
+      #pragma omp parallel for num_threads(numThreadsToUse) reduction(max : errCodeVal)
       for (int localRank : localRanksToExecute)
       {
-        CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
+        if (this->verbose && this->useRankThreading)
+          INFO("Group %d collective %d running rank %d on thread %d\n", groupId, collId, localRank, getThreadId());
 
-        CollectiveArgs const& collArg = this->collArgs[groupId][localRank][collId];
+        CHECK_HIP_RANK(errCode, hipSetDevice(this->deviceIds[localRank]));
+
+        CollectiveArgs& collArg = this->collArgs[groupId][localRank][collId];
 
         if (this->printValues && !useHipGraph)
         {
@@ -492,14 +533,14 @@ namespace RcclUnitTesting
           PtrUnion inputCpu;
           size_t const numInputBytes = numInputElementsToPrint * DataTypeToBytes(collArg.dataType);
           inputCpu.AllocateCpuMem(numInputBytes);
-          CHECK_HIP(hipMemcpy(inputCpu.ptr, collArg.inputGpu.ptr, numInputBytes, hipMemcpyDeviceToHost));
+          CHECK_HIP_RANK(errCode, hipMemcpy(inputCpu.ptr, collArg.inputGpu.ptr, numInputBytes, hipMemcpyDeviceToHost));
           printf("[ DEBUG    ] Rank %02d Group %d Coll %d %-10s: %s\n", collArg.globalRank, groupId, collId, "Input",
                  inputCpu.ToString(collArg.dataType, numInputElementsToPrint).c_str());
           inputCpu.FreeCpuMem();
 
           int const numOutputElementsToPrint = (this->printValues < 0 ? collArg.numOutputElements : this->printValues);
           size_t const numOutputBytes = numOutputElementsToPrint * DataTypeToBytes(collArg.dataType);
-          CHECK_HIP(hipMemcpy(collArg.outputCpu.ptr, collArg.outputGpu.ptr, numOutputBytes, hipMemcpyDeviceToHost));
+          CHECK_HIP_RANK(errCode, hipMemcpy(collArg.outputCpu.ptr, collArg.outputGpu.ptr, numOutputBytes, hipMemcpyDeviceToHost));
           printf("[ DEBUG    ] Rank %02d Group %d Coll %d %-10s: %s\n", collArg.globalRank, groupId, collId, "Pre-Output",
                  collArg.outputCpu.ToString(collArg.dataType, numOutputElementsToPrint).c_str());
         }
@@ -507,7 +548,8 @@ namespace RcclUnitTesting
         switch (collArg.funcType)
         {
         case ncclCollBroadcast:
-          CHILD_NCCL_CALL(ncclBroadcast(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclBroadcast(
+                                        collArg.inputGpu.ptr,
                                         collArg.outputGpu.ptr,
                                         collArg.numInputElements,
                                         collArg.dataType,
@@ -517,7 +559,8 @@ namespace RcclUnitTesting
                           "ncclBroadcast");
           break;
         case ncclCollReduce:
-          CHILD_NCCL_CALL(ncclReduce(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclReduce(
+                                     collArg.inputGpu.ptr,
                                      collArg.outputGpu.ptr,
                                      collArg.numInputElements,
                                      collArg.dataType,
@@ -528,7 +571,8 @@ namespace RcclUnitTesting
                           "ncclReduce");
           break;
         case ncclCollAllGather:
-          CHILD_NCCL_CALL(ncclAllGather(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclAllGather(
+                                        collArg.inputGpu.ptr,
                                         collArg.outputGpu.ptr,
                                         collArg.numInputElements,
                                         collArg.dataType,
@@ -537,7 +581,8 @@ namespace RcclUnitTesting
                           "ncclAllGather");
           break;
         case ncclCollReduceScatter:
-          CHILD_NCCL_CALL(ncclReduceScatter(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclReduceScatter(
+                                            collArg.inputGpu.ptr,
                                             collArg.outputGpu.ptr,
                                             collArg.numOutputElements,
                                             collArg.dataType,
@@ -547,7 +592,8 @@ namespace RcclUnitTesting
                           "ncclReduceScatter");
           break;
         case ncclCollAllReduce:
-          CHILD_NCCL_CALL(ncclAllReduce(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclAllReduce(
+                                        collArg.inputGpu.ptr,
                                         collArg.outputGpu.ptr,
                                         collArg.numInputElements,
                                         collArg.dataType,
@@ -557,7 +603,8 @@ namespace RcclUnitTesting
                           "ncclAllReduce");
           break;
         case ncclCollGather:
-          CHILD_NCCL_CALL(ncclGather(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclGather(
+                                     collArg.inputGpu.ptr,
                                      collArg.outputGpu.ptr,
                                      collArg.numInputElements,
                                      collArg.dataType,
@@ -567,7 +614,8 @@ namespace RcclUnitTesting
                           "ncclGather");
           break;
         case ncclCollScatter:
-          CHILD_NCCL_CALL(ncclScatter(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclScatter(
+                                      collArg.inputGpu.ptr,
                                       collArg.outputGpu.ptr,
                                       collArg.numOutputElements,
                                       collArg.dataType,
@@ -577,7 +625,8 @@ namespace RcclUnitTesting
                           "ncclScatter");
           break;
         case ncclCollAllToAll:
-          CHILD_NCCL_CALL(ncclAllToAll(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclAllToAll(
+                                       collArg.inputGpu.ptr,
                                        collArg.outputGpu.ptr,
                                        collArg.numInputElements / collArg.totalRanks,
                                        collArg.dataType,
@@ -586,7 +635,8 @@ namespace RcclUnitTesting
                           "ncclAllToAll");
           break;
         case ncclCollAllToAllv:
-          CHILD_NCCL_CALL(ncclAllToAllv(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclAllToAllv(
+                                        collArg.inputGpu.ptr,
                                         collArg.options.sendcounts + (this->rankOffset + localRank)*this->totalRanks,
                                         collArg.options.sdispls + (this->rankOffset + localRank)*this->totalRanks,
                                         collArg.outputGpu.ptr,
@@ -598,7 +648,8 @@ namespace RcclUnitTesting
                           "ncclAllToAllv");
           break;
         case ncclCollSend:
-          CHILD_NCCL_CALL(ncclSend(collArg.inputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclSend(
+                                   collArg.inputGpu.ptr,
                                    collArg.numInputElements,
                                    collArg.dataType,
                                    collArg.options.root,
@@ -607,7 +658,8 @@ namespace RcclUnitTesting
                           "ncclSend");
           break;
         case ncclCollRecv:
-          CHILD_NCCL_CALL(ncclRecv(collArg.outputGpu.ptr,
+          CHILD_NCCL_CALL_RANK(errCode, ncclRecv(
+                                   collArg.outputGpu.ptr,
                                    collArg.numOutputElements,
                                    collArg.dataType,
                                    collArg.options.root,
@@ -617,14 +669,18 @@ namespace RcclUnitTesting
           break;
         default:
           ERROR("Unknown func type %d\n", collArg.funcType);
-          return TEST_FAIL;
+          RANK_RESULT(errCode, TEST_FAIL);
         }
         if (this->useBlocking == false)
         {
-          CHILD_NCCL_CALL_NON_BLOCKING("ncclCommGetAsyncErrorExecuteCollectives", localRank);
+          CHILD_NCCL_CALL_NON_BLOCKING_RANK(errCode, "ncclCommGetAsyncErrorExecuteCollectives", localRank);
         }
+
+        if (this->verbose && this->useRankThreading)
+          INFO("Group %d collective %d done rank %d on thread %d\n", groupId, collId, localRank, getThreadId());
       }
 
+      if (this->useRankThreading) CHECK_CALL(errCode);
     }
     // End group call
     if (this->useBlocking == false)
@@ -839,6 +895,10 @@ namespace RcclUnitTesting
         {
           INFO("Child %d release memory for collective %d in group %d (Input: %p Output %p\n",
                this->childId, collIdx, groupId, collArg.inputGpu.ptr, collArg.outputGpu.ptr);
+        }
+        if (collArg.userRegistered && (collArg.funcType == ncclCollSend || collArg.funcType == ncclCollRecv))
+        {
+          CHILD_NCCL_CALL(ncclCommDeregister(this->comms[localRank], collArg.commRegHandle), "ncclCommDeregister");
         }
 
         CHECK_CALL(collArg.DeallocateMem());

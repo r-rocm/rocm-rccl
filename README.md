@@ -2,6 +2,8 @@
 
 ROCm Communication Collectives Library
 
+> **Note:** The published documentation is available at [RCCL](https://rocm.docs.amd.com/projects/rccl/en/latest/index.html) in an organized easy-to-read format that includes a table of contents and search functionality. The documentation source files reside in the [rccl/docs](https://github.com/ROCm/rccl/tree/develop/docs) folder in this repository. As with all ROCm projects, the documentation is open source. For more information, see [Contribute to ROCm documentation](https://rocm.docs.amd.com/en/latest/contribute/contributing.html).
+
 ## Introduction
 
 RCCL (pronounced "Rickle") is a stand-alone library of standard collective communication routines for GPUs, implementing all-reduce, all-gather, reduce, broadcast, reduce-scatter, gather, scatter, and all-to-all. There is also initial support for direct GPU-to-GPU send and receive operations.  It has been optimized to achieve high bandwidth on platforms using PCIe, xGMI as well as networking using InfiniBand Verbs or TCP/IP sockets. RCCL supports an arbitrary number of GPUs installed in a single node or multiple nodes, and can be used in either single- or multi-process (e.g., MPI) applications.
@@ -37,6 +39,7 @@ RCCL build & installation helper script
        --enable_backtrace      Build with custom backtrace support
        --disable-colltrace     Build without collective trace
        --disable-msccl-kernel  Build without MSCCL kernels
+       --disable-mscclpp       Build without MSCCL++ support
     -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace, and collective trace support)
     -h|--help                  Prints this help message
     -i|--install               Install RCCL library (see --prefix argument below)
@@ -45,6 +48,7 @@ RCCL build & installation helper script
        --amdgpu_targets        Only compile for specified GPU architecture(s). For multiple targets, seperate by ';' (builds for all supported GPU architectures by default)
        --no_clean              Don't delete files if they already exist
        --npkit-enable          Compile with npkit enabled
+       --openmp-test-enable    Enable OpenMP in rccl unit tests
        --roctx-enable          Compile with roctx enabled (example usage: rocprof --roctx-trace ./rccl-program)
     -p|--package_build         Build RCCL package
        --prefix                Specify custom directory to install RCCL to (default: `/opt/rocm`)
@@ -57,21 +61,27 @@ RCCL build & installation helper script
        --verbose               Show compile commands
 ```
 
+By default, RCCL builds for all GPU targets defined in `DEFAULT_GPUS` in `CMakeLists.txt`. To target specific GPU(s), and potentially reduce build time, use `--amdgpu_targets` as a `;` separated string listing GPU(s) to target.
+
 ## Manual build
 
 ### To build the library using CMake:
 
 ```shell
-$ git clone https://github.com/ROCm/rccl.git
+$ git clone --recursive https://github.com/ROCm/rccl.git
 $ cd rccl
 $ mkdir build
 $ cd build
 $ cmake ..
 $ make -j 16      # Or some other suitable number of parallel jobs
 ```
+If you have already cloned, you can checkout the external submodules manually.
+```shell
+$ git submodule update --init --recursive --depth=1
+```
 You may substitute an installation path of your own choosing by passing `CMAKE_INSTALL_PREFIX`. For example:
 ```shell
-$ cmake -DCMAKE_INSTALL_PREFIX=$PWD/rccl-install ..
+$ cmake -DCMAKE_INSTALL_PREFIX=$PWD/rccl-install -DCMAKE_BUILD_TYPE=Release ..
 ```
 Note: ensure rocm-cmake is installed, `apt install rocm-cmake`.
 
@@ -85,11 +95,37 @@ $ make package
 $ sudo dpkg -i *.deb
 ```
 
-RCCL package install requires sudo/root access because it creates a directory called "rccl" under /opt/rocm/. This is an optional step and RCCL can be used directly by including the path containing librccl.so.
+RCCL package install requires sudo/root access because it installs under `/opt/rocm/`. This is an optional step as RCCL can instead be used directly by including the path containing `librccl.so`.
 
-## Enabling peer-to-peer transport
+## Docker build
 
-In order to enable peer-to-peer access on machines with PCIe-connected GPUs, the HSA environment variable HSA_FORCE_FINE_GRAIN_PCIE=1 is required to be set, on top of requiring GPUs that support peer-to-peer access and proper large BAR addressing support.
+Assuming you have docker installed on your system:
+
+#### To build the docker image :
+
+By default, the given Dockerfile uses `docker.io/rocm/dev-ubuntu-22.04:latest` as the base docker image, and then installs RCCL (develop branch) and RCCL-Tests (develop branch).
+```shell
+$ docker build -t rccl-tests -f Dockerfile.ubuntu --pull .
+```
+
+The base docker image, rccl repo, and rccl-tests repo can be modified using `--build-args` in the `docker build` command above. E.g., to use a different base docker image:
+```shell
+$ docker build -t rccl-tests -f Dockerfile.ubuntu --build-arg="ROCM_IMAGE_NAME=rocm/dev-ubuntu-20.04" --build-arg="ROCM_IMAGE_TAG=6.2" --pull .
+```
+
+#### To start an interactive docker container on a system with AMD GPUs :
+
+```shell
+$ docker run -it --rm --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --network=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined rccl-tests /bin/bash
+```
+
+#### To run rccl-tests (all_reduce_perf) on 8 AMD GPUs (inside the docker container) :
+
+```shell
+$ mpirun --allow-run-as-root -np 8 --mca pml ucx --mca btl ^openib -x NCCL_DEBUG=VERSION /workspace/rccl-tests/build/all_reduce_perf -b 1 -e 16G -f 2 -g 1
+```
+
+For more information on rccl-tests options, refer to the [Usage](https://github.com/ROCm/rccl-tests#usage) section of rccl-tests.
 
 ## Tests
 
@@ -100,28 +136,16 @@ rccl unit test names are now of the format:
 
     CollectiveCall.[Type of test]
 
-Filtering of rccl unit tests should be done with environment variable and by passing the --gtest_filter command line flag, for example:
+Filtering of rccl unit tests should be done with environment variable and by passing the `--gtest_filter` command line flag, for example:
 
 ```shell
 UT_DATATYPES=ncclBfloat16 UT_REDOPS=prod ./rccl-UnitTests --gtest_filter="AllReduce.C*"
 ```
-will run only AllReduce correctness tests with float16 datatype. A list of available filtering environment variables appears at the top of every run. See "Running a Subset of the Tests" at https://chromium.googlesource.com/external/github.com/google/googletest/+/HEAD/googletest/docs/advanced.md for more information on how to form more advanced filters.
 
+will run only AllReduce correctness tests with float16 datatype. A list of available filtering environment variables appears at the top of every run. See "Running a Subset of the Tests" at https://google.github.io/googletest/advanced.html#running-a-subset-of-the-tests for more information on how to form more advanced filters.
 
 There are also other performance and error-checking tests for RCCL.  These are maintained separately at https://github.com/ROCm/rccl-tests.
 See the rccl-tests README for more information on how to build and run those tests.
-
-## NPKit
-
-RCCL integrates [NPKit](https://github.com/microsoft/npkit), a profiler framework that enables collecting fine-grained trace events in RCCL components, especially in giant collective GPU kernels.
-
-Please check [NPKit sample workflow for RCCL](https://github.com/microsoft/NPKit/tree/main/rccl_samples) as a fully automated usage example. It also provides good templates for the following manual instructions.
-
-To manually build RCCL with NPKit enabled, pass `-DNPKIT_FLAGS="-DENABLE_NPKIT -DENABLE_NPKIT_...(other NPKit compile-time switches)"` with cmake command. All NPKit compile-time switches are declared in the RCCL code base as macros with prefix `ENABLE_NPKIT_`, and they control which information will be collected. Also note that currently NPKit only supports collecting non-overlapped events on GPU, and `-DNPKIT_FLAGS` should follow this rule.
-
-To manually run RCCL with NPKit enabled, environment variable `NPKIT_DUMP_DIR` needs to be set as the NPKit event dump directory. Also note that currently NPKit only supports 1 GPU per process.
-
-To manually analyze NPKit dump results, please leverage [npkit_trace_generator.py](https://github.com/microsoft/NPKit/blob/main/rccl_samples/npkit_trace_generator.py).
 
 ## Library and API Documentation
 
@@ -136,17 +160,6 @@ cd docs
 pip3 install -r sphinx/requirements.txt
 python3 -m sphinx -T -E -b html -d _build/doctrees -D language=en . _build/html
 ```
-
-### Improving performance on MI300 when using less than 8 GPUs
-
-On a system with 8\*MI300X GPUs, each pair of GPUs are connected with dedicated XGMI links in a fully-connected topology. So, for collective operations, one can achieve good performance when all 8 GPUs (and all XGMI links) are used. When using less than 8 GPUs, one can only achieve a fraction of the potential bandwidth on the system.
-
-But, if your workload warrants using less than 8 MI300 GPUs on a system, you can set the run-time variable `NCCL_MIN_NCHANNELS` to increase the number of channels.\
-E.g.: `export NCCL_MIN_NCHANNELS=32`
-
-Increasing the number of channels can be beneficial to performance, but it also increases GPU utilization for collective operations.
-
-Additionally, we have pre-defined higher number of channels when using only 2 GPUs or 4 GPUs on a 8\*MI300 system. Here, RCCL will use **32 channels** for the 2 MI300 GPUs scenario and **24 channels** for the 4 MI300 GPUs scenario.
 
 ## Copyright
 

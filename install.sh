@@ -23,10 +23,13 @@ enable_ninja=""
 install_dependencies=false
 install_library=false
 install_prefix="${ROCM_PATH}"
+log_trace=false
 msccl_kernel_enabled=true
+mscclpp_enabled=true
 num_parallel_jobs=$(nproc)
 npkit_enabled=false
-roctx_enabled=false
+openmp_test_enabled=false
+roctx_enabled=true
 run_tests=false
 run_tests_all=false
 time_trace=false
@@ -39,20 +42,23 @@ function display_help()
     echo "RCCL build & installation helper script"
     echo " Options:"
     echo "       --address-sanitizer     Build with address sanitizer enabled"
-    echo "    -d|--dependencies          Install RCCL depdencencies"
+    echo "    -d|--dependencies          Install RCCL dependencies"
     echo "       --debug                 Build debug library"
     echo "       --enable_backtrace      Build with custom backtrace support"
     echo "       --disable-colltrace     Build without collective trace"
     echo "       --disable-msccl-kernel  Build without MSCCL kernels"
+    echo "       --disable-mscclpp       Build without MSCCL++ support"
+    echo "       --disable-roctx         Build without ROCTX logging"
     echo "    -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace, and collective trace support)"
     echo "    -h|--help                  Prints this help message"
     echo "    -i|--install               Install RCCL library (see --prefix argument below)"
     echo "    -j|--jobs                  Specify how many parallel compilation jobs to run ($num_parallel_jobs by default)"
     echo "    -l|--local_gpu_only        Only compile for local GPU architecture"
-    echo "       --amdgpu_targets        Only compile for specified GPU architecture(s). For multiple targets, seperate by ';' (builds for all supported GPU architectures by default)"
+    echo "       --amdgpu_targets        Only compile for specified GPU architecture(s). For multiple targets, separate by ';' (builds for all supported GPU architectures by default)"
     echo "       --no_clean              Don't delete files if they already exist"
     echo "       --npkit-enable          Compile with npkit enabled"
-    echo "       --roctx-enable          Compile with roctx enabled (example usage: rocprof --roctx-trace ./rccl-program)"
+    echo "       --log-trace             Build with log trace enabled (i.e. NCCL_DEBUG=TRACE)"
+    echo "       --openmp-test-enable    Enable OpenMP in rccl unit tests"
     echo "    -p|--package_build         Build RCCL package"
     echo "       --prefix                Specify custom directory to install RCCL to (default: \`/opt/rocm\`)"
     echo "       --rm-legacy-include-dir Remove legacy include dir Packaging added for file/folder reorg backward compatibility"
@@ -71,7 +77,7 @@ function display_help()
 # check if we have a modern version of getopt that can handle whitespace and long parameters
 getopt -T
 if [[ "$?" -eq 4 ]]; then
-    GETOPT_PARSE=$(getopt --name "${0}" --options dfhij:lprt --longoptions address-sanitizer,dependencies,debug,enable_backtrace,disable-colltrace,disable-msccl-kernel,fast,help,install,jobs:,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,verbose -- "$@")
+    GETOPT_PARSE=$(getopt --name "${0}" --options dfhij:lprt --longoptions address-sanitizer,dependencies,debug,enable_backtrace,disable-colltrace,disable-msccl-kernel,disable-mscclpp,fast,help,install,jobs:,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,verbose -- "$@")
 else
     echo "Need a new version of getopt"
     exit 1
@@ -92,6 +98,8 @@ while true; do
          --enable_backtrace)         build_bfd=true;                                                                                   shift ;;
          --disable-colltrace)        collective_trace=false;                                                                           shift ;;
          --disable-msccl-kernel)     msccl_kernel_enabled=false;                                                                       shift ;;
+         --disable-mscclpp)          mscclpp_enabled=false;                                                                            shift ;;
+         --disable-roctx)            roctx_enabled=false;                                                                              shift ;;
     -f | --fast)                     build_local_gpu_only=true; collective_trace=false; msccl_kernel_enabled=false;                    shift ;;
     -h | --help)                     display_help;                                                                                     exit 0 ;;
     -i | --install)                  install_library=true;                                                                             shift ;;
@@ -100,7 +108,8 @@ while true; do
          --amdgpu_targets)           build_amdgpu_targets=${2};                                                                        shift 2 ;;
          --no_clean)                 clean_build=false;                                                                                shift ;;
          --npkit-enable)             npkit_enabled=true;                                                                               shift ;;
-         --roctx-enable)             roctx_enabled=true;                                                                               shift ;;
+         --log-trace)                log_trace=true;                                                                                   shift ;;
+         --openmp-test-enable)       openmp_test_enabled=true;                                                                         shift ;;
     -p | --package_build)            build_package=true;                                                                               shift ;;
          --prefix)                   install_library=true; install_prefix=${2};                                                        shift 2 ;;
          --rm-legacy-include-dir)    build_freorg_bkwdcomp=false;                                                                      shift ;;
@@ -213,7 +222,7 @@ fi
 
 # Build for specified GPU target(s) only
 if [[ ! -z "${build_amdgpu_targets}" ]]; then
-    cmake_common_options="${cmake_common_options} -DAMDGPU_TARGETS=${build_amdgpu_targets}"
+    cmake_common_options="${cmake_common_options} -DGPU_TARGETS=${build_amdgpu_targets}"
 fi
 
 # shared vs static
@@ -231,6 +240,10 @@ if [[ "${msccl_kernel_enabled}" == false ]]; then
     cmake_common_options="${cmake_common_options} -DENABLE_MSCCL_KERNEL=OFF"
 fi
 
+if [[ "${mscclpp_enabled}" == false ]]; then
+    cmake_common_options="${cmake_common_options} -DENABLE_MSCCLPP=OFF"
+fi
+
 # Install dependencies
 if [[ "${install_dependencies}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DINSTALL_DEPENDENCIES=ON"
@@ -241,9 +254,19 @@ if [[ "${install_library}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DCMAKE_INSTALL_PREFIX=${install_prefix}"
 fi
 
-# Enable ROCTX
-if [[ "${roctx_enabled}" == true ]]; then
-    cmake_common_options="${cmake_common_options} -DROCTX=ON"
+# Enable trace debug level
+if [[ "${log_trace}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DTRACE=ON"
+fi
+
+# Disable ROCTX
+if [[ "${roctx_enabled}" == false ]]; then
+    cmake_common_options="${cmake_common_options} -DROCTX=OFF"
+fi
+
+# Enable OpenMP in unit tests
+if [[ "${openmp_test_enabled}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DOPENMP_TESTS_ENABLED=ON"
 fi
 
 # Enable NPKit
@@ -373,7 +396,7 @@ else
 fi
 
 # Add common CMake options
-cmake_common_options="${cmake_common_options} -DROCM_PATH=${ROCM_PATH} -DONLY_FUNCS=${ONLY_FUNCS} ${enable_ninja}"
+cmake_common_options="${cmake_common_options} -DROCM_PATH=${ROCM_PATH} ${enable_ninja}"
 
 # Build RCCL-UnitTests, if enabled
 if [[ "${build_tests}" == true ]] || ([[ "${run_tests}" == true ]] && [[ ! -x ./test/rccl-UnitTests ]]); then
@@ -383,7 +406,7 @@ fi
 # Initiate RCCL CMake
 # Passing NPKIT_FLAGS separately (not as part of ${cmake_common_options}) as
 # ${npkit_options} need to be passed "as-is" i.e. with `-D` to CMakeLists.txt
-${cmake_executable} ${cmake_common_options} -DNPKIT_FLAGS="${npkit_options}" ../../.
+${cmake_executable} ${cmake_common_options} -DNPKIT_FLAGS="${npkit_options}" -DONLY_FUNCS="${ONLY_FUNCS}" ../../.
 check_exit_code "$?"
 
 # Enable verbose output from Makefile
