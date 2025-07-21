@@ -26,31 +26,14 @@ extern __shared__ struct mscclShmemData mscclShmem;
 #define GET_WORKINDEX_FROM_FLAG(__FLAG__) \
   (__FLAG__) / (MSCCL_MAX_ITER*MSCCL_MAX_NUM_STEPS)
 
-#ifdef ENABLE_COLLTRACE
-  #define INC_COLL_TRACE \
-    uint32_t pos = atomicAdd(&ncclShmem.collTraceTail->tail, 1)%COLLTRACE_NUM_ITEMS; \
-    struct ncclCollTrace* collTrace = ncclShmem.collTrace+pos; \
-    collTrace->timeStamp = wall_clock64(); \
-    collTrace->bid = blockIdx.x;
-    // TODO: switch to atomicInc after llvm crash is fixed
-    // uint32_t pos = atomicInc(&ncclShmem.collTraceTail->tail, COLLTRACE_NUM_ITEMS)
-
-  #define traceData(data2, data4, data8_0, data8_1) { \
-    INC_COLL_TRACE \
-    collTrace->funcIndex = data2; \
-    collTrace->data_0 = data4; \
-    collTrace->opCount = data8_0; \
-    collTrace->data_1 = data8_1; \
-    collTrace->type = ncclCollTraceDataType; \
-  }
-#else
-#define traceData(data2, data4, data8_0, data8_1)
-#endif
-
 inline __device__ static void barrier(int nthreads) {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   assert(nthreads == NCCL_MAX_NTHREADS);
-  __asm__ __volatile__("s_waitcnt vmcnt(0) lgkmcnt(0)\ns_barrier");
+  #ifdef __GFX12__
+    __asm__ __volatile__("s_waitcnt vmcnt(0) lgkmcnt(0)\ns_barrier_signal -1\ns_barrier_wait -1");
+  #else
+    __asm__ __volatile__("s_waitcnt vmcnt(0) lgkmcnt(0)\ns_barrier");
+  #endif
 #else
   asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(15));
 #endif
@@ -185,8 +168,7 @@ __device__ __forceinline__ void mscclRunInterpreter(
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_TIME_SYNC_CPU)
   if (tid == 0) {
-    uint64_t* cpuTimestamp = ncclShmem.comm.cpuTimestamp;
-    NpKit::CollectGpuEventLDS(NPKIT_EVENT_TIME_SYNC_CPU, 0, xcc_id, *cpuTimestamp);
+    NpKit::CollectGpuEventLDS(NPKIT_EVENT_TIME_SYNC_CPU, 0, xcc_id, NPKIT_GET_CPU_TIMESTAMP_FROM_BLOCK);
   }
 #endif
 
@@ -401,7 +383,7 @@ __global__ void MSCCL_KERNEL_ENTRY_NAME(devredop, type, LL128, fullOps)(struct n
   mscclRunInterpreter<type, Func##devredop<type>, ProtoLL128, fullOps>(comm, algo, work); \
 } \
 __global__ void MSCCL_KERNEL_ENTRY_NAME(devredop, type, Simple, fullOps)(struct ncclDevComm* comm, struct mscclAlgo* algo, struct mscclWork* work) { \
-  mscclRunInterpreter<type, Func##devredop<type>, ProtoSimple<MSCCL_CHUNKSTEPS/MSCCL_SLICESTEPS, MSCCL_SLICESTEPS>, fullOps>(comm, algo, work); \
+  mscclRunInterpreter<type, Func##devredop<type>, ProtoSimple<MSCCL_CHUNKSTEPS/MSCCL_SLICESTEPS, MSCCL_SLICESTEPS, 2>, fullOps>(comm, algo, work); \
 }
 
 #define MSCCL_IMPL_KERNEL_ENTRY_FUNC_DEVREDOP(devredop, fullOps) \

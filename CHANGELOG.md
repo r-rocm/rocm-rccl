@@ -1,6 +1,69 @@
-# Change Log for RCCL
+# Changelog for RCCL
 
 Full documentation for RCCL is available at [https://rccl.readthedocs.io](https://rccl.readthedocs.io)
+
+## Unreleased - RCCL 2.22.3 for ROCm 6.4.1
+
+### Resolved issues
+
+* Fixed the accuracy issue for MSCCLPP `allreduce7` kernel in graph mode.
+
+## Unreleased - RCCL 2.22.3 for ROCm 6.4.0
+
+### Added
+
+* `RCCL_SOCKET_REUSEADDR` and `RCCL_SOCKET_LINGER` environment parameters
+* Setting `NCCL_DEBUG=TRACE NCCL_DEBUG_SUBSYS=VERBS` will generate traces for fifo and data ibv_post_sends
+* Added `--log-trace` flag to enable traces through the install.sh script (e.g. `./install.sh --log-trace`)
+
+### Changed
+
+* Compatibility with NCCL 2.22.3
+* Added support for the rail-optimized tree algorithm for the MI300 series. This feature requires the use of all eight GPUs within
+  each node. It limits NIC traffic to use only GPUs of the same index across nodes and should not impact performance
+  on non-rail-optimized network topologies. The original method of building trees can be enabled by setting the
+  environment variable `RCCL_DISABLE_RAIL_TREES=1`.
+* Additional debug information about how the trees are built can be logged to the GRAPH logging subsys by setting
+  `RCCL_OUTPUT_TREES=1`.
+* MSCCL++ is now disabled by default. To enable, set `RCCL_MSCCLPP_ENABLE=1`.
+
+## RCCL 2.21.5 for ROCm 6.3.1
+
+### Added
+
+### Changed
+
+* Enhanced user documentation
+
+### Resolved issues
+
+* Corrected user help strings in `install.sh`
+
+## RCCL 2.21.5 for ROCm 6.3.0
+
+### Added
+
+* MSCCL++ integration for AllReduce and AllGather on gfx942
+* Performance collection to rccl_replayer
+* Tuner Plugin example for MI300
+* Tuning table for large number of nodes
+* Support for amdclang++
+* Allow NIC ID remapping using `NCCL_RINGS_REMAP` environment variable
+
+### Changed
+
+* Compatibility with NCCL 2.21.5
+* Increased channel count for MI300X multi-node
+* Enabled MSCCL for single-process multi-threaded contexts
+* Enabled gfx12
+* Enabled CPX mode for MI300X
+* Enabled tracing with rocprof
+* Improved version reporting
+* Enabled GDRDMA for Linux kernel 6.4.0+
+
+### Resolved issues
+
+* Fixed model matching with PXN enable
 
 ## RCCL 2.20.5 for ROCm 6.2.1
 ### Fixed
@@ -33,15 +96,9 @@ Full documentation for RCCL is available at [https://rccl.readthedocs.io](https:
 - New unit test for main kernel stack size
 - New -n option for topo_expl to override # of nodes
 - Improved debug messages of memory allocations
-- Channel shuffling for multi-node MI300X systems
 ### Fixed
 - Bug when configuring RCCL for only LL128 protocol
 - Scratch memory allocation after API change for MSCCL
-- Incorrect minNchannels in multi-node
-
-## RCCL 2.18.6 for ROCm 6.1.2
-### Changed
-- Reduced NCCL_TOPO_MAX_NODES to limit stack usage and avoid overflow
 
 ## RCCL 2.18.6 for ROCm 6.1.0
 ### Changed

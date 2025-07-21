@@ -29,6 +29,9 @@ namespace RcclUnitTesting
     bool showTiming;     // Show timing per case at end            [UT_SHOW_TIMING]
     bool useInteractive; // Run in interactive mode                [UT_INTERACTIVE]
     int  timeoutUs;      // Set timeout for child in microseconds  [UT_TIMEOUT_US]
+    bool useMultithreading; // Multi-thread single-process ranks   [UT_MULTITHREAD]
+    bool isGfx94;        // Detects if architecture is gfx94
+    bool isGfx12;        // Detects if architecture is gfx12
 
     // Constructor that parses and collects environment variables
     EnvVars();
@@ -38,6 +41,7 @@ namespace RcclUnitTesting
 
     std::vector<int>            const& GetNumGpusList();
     std::vector<int>            const& GetIsMultiProcessList();
+    std::vector<int>            const& GetGpuPriorityOrder();   // Orders the gpus based on the associativity of them with OAM with higher gpus linked.
     void ShowConfig();
 
   protected:
@@ -46,6 +50,7 @@ namespace RcclUnitTesting
     std::vector<int>            numGpusList;        // List of # Gpus to use   [UT_MIN_GPUS/UT_MAX_GPUS/UT_POW2_GPUS]
     std::vector<int>            isMultiProcessList; // Single or multi process [UT_PROCESS_MASK]
     int                         numDetectedGpus;
+    std::vector<int>            gpuPriorityOrder;   // Orders the gpus based on the associativity of them with OAM with higher gpus linked.
 
     // Helper functions to parse environment variables
     int GetEnvVar(std::string const varname, int defaultValue);

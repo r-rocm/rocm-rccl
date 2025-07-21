@@ -97,7 +97,7 @@ namespace RcclUnitTesting
     childList.resize(this->numActiveChildren);
     for (int childId = 0; childId < this->numActiveChildren; ++childId)
     {
-      childList[childId] = new TestBedChild(childId, ev.verbose, ev.printValues);
+      childList[childId] = new TestBedChild(childId, ev.verbose, ev.printValues, ev.useMultithreading);
       if (childList[childId]->InitPipes() != TEST_SUCCESS)
       {
         ERROR("Unable to create pipes to child process\n");
@@ -193,7 +193,8 @@ namespace RcclUnitTesting
 
   void TestBed::InitComms(int const numGpus, int const numCollectivesInGroup, int const numStreamsPerGroup, int const numGroupCalls, bool const useBlocking)
   {
-    InitComms(TestBed::GetDeviceIdsList(1, numGpus), TestBed::GetNumCollsPerGroup(numCollectivesInGroup, numGroupCalls), TestBed::GetNumStreamsPerGroup(numStreamsPerGroup, numGroupCalls), numGroupCalls, useBlocking);
+     const std::vector<int>& gpuPriorityOrder = ev.GetGpuPriorityOrder();
+     InitComms(GetDeviceIdsList(1, numGpus, gpuPriorityOrder), TestBed::GetNumCollsPerGroup(numCollectivesInGroup, numGroupCalls), TestBed::GetNumStreamsPerGroup(numStreamsPerGroup, numGroupCalls), numGroupCalls, useBlocking);
   }
 
   void TestBed::SetCollectiveArgs(ncclFunc_t      const funcType,
@@ -242,7 +243,8 @@ namespace RcclUnitTesting
                             bool   const useManagedMem,
                             int    const groupId,
                             int    const collId,
-                            int    const rank)
+                            int    const rank,
+                            bool   const userRegistered)
   {
     InteractiveWait("Starting AllocateMem");
 
@@ -267,6 +269,7 @@ namespace RcclUnitTesting
         PIPE_WRITE(childId, collId);
         PIPE_WRITE(childId, inPlace);
         PIPE_WRITE(childId, useManagedMem);
+        PIPE_WRITE(childId, userRegistered);
         PIPE_WRITE(childId, currGroup);
         PIPE_CHECK(childId);
       }
@@ -560,21 +563,23 @@ namespace RcclUnitTesting
   }
 
   std::vector<std::vector<int>> TestBed::GetDeviceIdsList(int const numProcesses,
-                                                          int const numGpus)
+                                                          int const numGpus,
+                                                          const std::vector<int>& gpuPriorityOrder)
   {
-    return GetDeviceIdsList(numProcesses, numGpus, 1);
+    return GetDeviceIdsList(numProcesses, numGpus, 1, gpuPriorityOrder);
   }
 
   std::vector<std::vector<int>> TestBed::GetDeviceIdsList(int const numProcesses,
                                                           int const numGpus,
-                                                          int const ranksPerGpu)
+                                                          int const ranksPerGpu,
+                                                          const std::vector<int>& gpuPriorityOrder)
   {
     std::vector<std::vector<int>> result(numProcesses);
     int ntasks = numProcesses == 1 ? numGpus : 1;
     int k=0;
     for (int i = 0; i < numProcesses; i++)
       for (int j = 0; j < ntasks * ranksPerGpu; j++) {
-        result[i].push_back(k%numGpus);
+        result[i].push_back(gpuPriorityOrder[k%numGpus]);
         k++;
       }
     return result;
@@ -616,7 +621,8 @@ namespace RcclUnitTesting
                                std::vector<int>            const& numElements,
                                std::vector<bool>           const& inPlaceList,
                                std::vector<bool>           const& managedMemList,
-                               std::vector<bool>           const& useHipGraphList)
+                               std::vector<bool>           const& useHipGraphList,
+                               bool                        const& enableSweep)
   {
     // Sort numElements in descending order to cut down on # of allocations
     std::vector<int> sortedN = numElements;
@@ -662,7 +668,11 @@ namespace RcclUnitTesting
       // Test either single process all GPUs, or 1 process per GPU
       int const numChildren = isMultiProcess ? numGpus : 1;
       int const numRanks    = numGpus*ranksPerGpu;
-      this->InitComms(TestBed::GetDeviceIdsList(numChildren, numGpus, ranksPerGpu));
+      if(enableSweep == false && (numGpus < 8 || numRanks < 8)) {
+        continue;
+      }
+      const std::vector<int>& gpuPriorityOrder = ev.GetGpuPriorityOrder();
+      this->InitComms(this->GetDeviceIdsList(numChildren, numGpus, ranksPerGpu, gpuPriorityOrder));
       if (testing::Test::HasFailure())
       {
         isCorrect = false;
@@ -685,7 +695,7 @@ namespace RcclUnitTesting
                                                     &numInputElements,
                                                     &numOutputElements);
           optionalArgs.redOp = redOps[rdIdx];
-          optionalArgs.root = roots[rtIdx];
+          optionalArgs.root = roots[rtIdx] % this->numActiveRanks;
           this->SetCollectiveArgs(funcTypes[ftIdx],
                                   dataTypes[dtIdx],
                                   numInputElements,

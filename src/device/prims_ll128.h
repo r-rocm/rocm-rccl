@@ -13,7 +13,7 @@
 #define NCCL_LL128_FLAGTHREAD (NCCL_LL128_LINEELEMS-1)
 
 #ifndef RCCL_USE_WBINVL1_VOL
-#if defined(__GFX8__) || defined(__GFX9__)
+#if defined(__GFX8__) || defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__)
 #define RCCL_USE_WBINVL1_VOL 1
 #else
 #define RCCL_USE_WBINVL1_VOL 0
@@ -62,7 +62,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p>:
   inline __device__ uint64_t sendFlag(int i) { return sendStep[i]+1; }
 
   uint64_t* barriers;
-  uint64_t* barrier_next;
+  uint64_t barrier_next = 0;
 
 #if defined(ENABLE_NPKIT)
 public:
@@ -74,11 +74,11 @@ private:
 #endif
 
   inline __device__ void barrier() {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   if (nthreads != WARP_SIZE)
     barrier_by_group();
 #else
-   asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(15-group));
+   barrier_sync(15-group, nthreads);
 #endif
   }
 
@@ -382,7 +382,6 @@ private:
 
     T const *srcPtr = srcs[0];
     T       *dstPtr = dsts[0];
-    int wireOffset = WireWordPerSlice*warp + 2*wid;
     const int nwarps = nthreads/WARP_SIZE;
     nelem = nelem < 0 ? 0 : nelem;
 
@@ -438,7 +437,6 @@ private:
         }
       }
 
-      wireOffset += WireWordPerSlice*nwarps;
       srcPtr += DataEltPerSlice*nwarps;
       dstPtr += DataEltPerSlice*nwarps;
       if (MULTISRCS){
@@ -500,7 +498,8 @@ public:
   __device__ Primitives(
       const int tid, const int nthreads, int const *recvPeers, int const *sendPeers,
       void const *inputBuf, void *outputBuf, uint64_t redOpArg, uint8_t group=0,
-      uint8_t connIndexRecv=0, uint8_t connIndexSend=0, struct ncclWorkElem* e = nullptr, int stepSize_=0
+      uint8_t connIndexRecv=0, uint8_t connIndexSend=0, struct ncclDevWorkColl* e = nullptr,
+      bool userBufReg=false, int stepSize_=0
     ):
     redOp(redOpArg),
     tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), warp(tid/WARP_SIZE),
@@ -509,7 +508,6 @@ public:
     stepSize(ncclShmem.comm.buffSizes[NCCL_PROTO_LL128]/NCCL_STEPS/sizeof(uint64_t)) {
     auto *channel = &ncclShmem.channel;
     barriers = &ncclShmem.groups[group].barrier;
-    barrier_next = ncclShmem.groups[group].barrier_next;
     int nrecv=0, nsend=0;
     while (nrecv < MaxRecv && recvPeers[nrecv] >= 0) {
       loadRecvConn(&channel->peers[recvPeers[nrecv]]->recv[connIndexRecv], nrecv);

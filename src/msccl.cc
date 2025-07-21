@@ -7,12 +7,13 @@
 #include "msccl/msccl_parser.h"
 #include "msccl/msccl_setup.h"
 #include "msccl/msccl_status.h"
+#include "api_trace.h"
 #include <cstdio>
 #include <cstdlib>
 
 NCCL_API(ncclResult_t, mscclLoadAlgo, const char *mscclAlgoFilePath, mscclAlgoHandle_t *mscclAlgoHandle, int rank);
-ncclResult_t mscclLoadAlgo(const char *mscclAlgoFilePath, mscclAlgoHandle_t *mscclAlgoHandle, int rank) {
-  mscclStatus& status = mscclGetStatus();
+ncclResult_t mscclLoadAlgo_impl(const char *mscclAlgoFilePath, mscclAlgoHandle_t *mscclAlgoHandle, int rank) {
+  mscclStatus& status = mscclGetStatus(rank);
 
   if (status.freeAlgoHandles.size() == 0) {
     WARN("MSCCL: MSCCL_MAX_NUM_ALGOS (%d) limit reached", MSCCL_MAX_NUM_ALGOS);
@@ -39,34 +40,46 @@ NCCL_API(ncclResult_t, mscclRunAlgo,
     void* recvBuff, const size_t recvCounts[], const size_t rDisPls[],
     size_t count, ncclDataType_t dataType, int root, int peer, ncclRedOp_t op,
     mscclAlgoHandle_t mscclAlgoHandle, ncclComm_t comm, hipStream_t stream);
-ncclResult_t mscclRunAlgo(
+ncclResult_t mscclRunAlgo_impl(
     const void* sendBuff, const size_t sendCounts[], const size_t sDisPls[],
     void* recvBuff, const size_t recvCounts[], const size_t rDisPls[],
     size_t count, ncclDataType_t dataType, int root, int peer, ncclRedOp_t op,
     mscclAlgoHandle_t mscclAlgoHandle, ncclComm_t comm, hipStream_t stream) {
   struct NvtxParamsMsccl {
-    size_t sendbytes;
-    size_t recvbytes;
+    size_t bytes;
+    ncclRedOp_t op;
+    ncclDataType_t dataType;
   };
   // Just pass the size of one send/recv messages and not the total bytes sent/received.
   constexpr nvtxPayloadSchemaEntry_t MscclSchema[] = {
-    {0, NVTX_PAYLOAD_ENTRY_TYPE_SIZE, "Message size [bytes] (Send)"},
-    {0, NVTX_PAYLOAD_ENTRY_TYPE_SIZE, "Message size [bytes] (Recv)"}
+    {0, NVTX_PAYLOAD_ENTRY_TYPE_SIZE, "Message size [bytes]"},
+    {0, NVTX_PAYLOAD_ENTRY_NCCL_REDOP, "Reduction operation", nullptr, 0, 
+      offsetof(NvtxParamsMsccl, op)},
+    {0, NVTX_PAYLOAD_ENTRY_TYPE_DATATYPE, "Data type", nullptr, 0, 
+      offsetof(NvtxParamsMsccl, dataType)}
   };
-  NvtxParamsMsccl payload{sendCounts[comm->rank] * ncclTypeSize(dataType), recvCounts[comm->rank] * ncclTypeSize(dataType)};
+  NvtxParamsMsccl payload{count * ncclTypeSize(dataType), op, dataType};
   NVTX3_FUNC_WITH_PARAMS(MSCCL, MscclSchema, payload)
   
-  mscclStatus& status = mscclGetStatus();
+  mscclStatus& status = mscclGetStatus(comm->rank);
   struct mscclAlgo* hostAlgo = status.hostAlgos[mscclAlgoHandle];
   struct mscclAlgo* devAlgo = status.devAlgos[mscclAlgoHandle];
 
-  NCCLCHECK(mscclGetCaptureStatus(stream));
+  // NCCL adds a lot of guarantees that target device is getting used
+  // in its group management code, which we entirely skip when MSCCL is used
+  // Therefore, in single thread multiGPU mode
+  // setting the device is critical to be sure 
+  // communication is done on the intended device
+
+  CUDACHECK(hipSetDevice(comm->cudaDev)); 
+
+  NCCLCHECK(mscclGetCaptureStatus(comm->rank, stream));
 
   NCCLCHECK(mscclSetupCount(hostAlgo, comm, count, dataType));
 
   NCCLCHECK(mscclSetupScratch(hostAlgo, stream));
 
-  NCCLCHECK(mscclSetupSyncFlags(stream));
+  NCCLCHECK(mscclSetupSyncFlags(comm->rank, stream));
 
   NCCLCHECK(mscclSetupProxy(hostAlgo, comm, stream));
 
@@ -76,20 +89,7 @@ ncclResult_t mscclRunAlgo(
 }
 
 NCCL_API(ncclResult_t, mscclUnloadAlgo, mscclAlgoHandle_t mscclAlgoHandle);
-ncclResult_t mscclUnloadAlgo(mscclAlgoHandle_t mscclAlgoHandle) {
-  mscclStatus& status = mscclGetStatus();
-
-  free(status.hostAlgos[mscclAlgoHandle]);
-  status.hostAlgos.erase(mscclAlgoHandle);
-
-  NCCLCHECK(ncclCudaFree(status.devAlgos[mscclAlgoHandle]));
-  status.devAlgos.erase(mscclAlgoHandle);
-
-  status.freeAlgoHandles.push_back(mscclAlgoHandle);
-
-  for (auto &s : status.connectedAlgos) {
-    s.second.erase(mscclAlgoHandle);
-  }
-
+ncclResult_t mscclUnloadAlgo_impl(mscclAlgoHandle_t mscclAlgoHandle) {
+  // deprecated
   return ncclSuccess;
 }

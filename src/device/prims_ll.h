@@ -66,14 +66,18 @@ private:
   inline __device__ uint32_t sendFlag(int i) { return NCCL_LL_FLAG(sendStep[i]+1); }
 
   uint64_t* barriers;
-  uint64_t* barrier_next;
+  uint64_t barrier_next = 0;
 
   inline __device__ void barrier() {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     if (nthreads != WARP_SIZE)
       barrier_by_group();
 #else
-    asm volatile ("bar.sync %1, %0;" :: "r"(nthreads), "r"(15-group));
+    if (nthreads == WARP_SIZE) {
+      __syncwarp();
+    } else {
+      barrier_sync(15-group, nthreads);
+    }
 #endif
   }
 
@@ -147,7 +151,7 @@ private:
     }
 #endif
 
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     union ncclLLFifoLine i4;
     do {
 #ifdef __GFX11__
@@ -190,7 +194,7 @@ private:
     for (int i=BeginIx; i < MaxRecv; i++) {
       if (i < fan.nrecv()) {
         union ncclLLFifoLine* src = recvPtr(i) + offset;
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
 #ifdef __GFX11__
         asm volatile ("global_load_b128 %0, %1, off glc slc dlc\n"
           "s_waitcnt vmcnt(0)\n" : "=v"(line[i].i4) : "v"(&src->i4));
@@ -217,7 +221,7 @@ private:
 #endif
 
     do {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
 #ifdef __GFX11__
       asm volatile ("global_load_b128 %0, %1, off glc slc dlc\n"
         "s_waitcnt vmcnt(0)\n" : "=v"(line[i].i4) : "v"(&src->i4));
@@ -246,7 +250,7 @@ private:
   }
 
   __device__ void storeLL(union ncclLLFifoLine* dst, uint64_t val, uint32_t flag) {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     union ncclLLFifoLine i4;
     i4.data1 = val & 0xffffffff;
     i4.flag1 = flag;
@@ -270,7 +274,7 @@ private:
       uint32_t u4;
       uint64_t u8;
     };
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     if(sizeof(U) == 1)
 #ifdef __GFX11__
       u1 = __atomic_load_n((uint8_t*)src, __ATOMIC_RELAXED);
@@ -318,7 +322,7 @@ private:
       uint64_t u8;
     };
     elt = val;
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HCC__) || defined(__HIPCC__)
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     if(sizeof(U) == 1)
       __builtin_nontemporal_store(u1, (uint8_t*)dst);
     else if(sizeof(U) == 2)
@@ -529,7 +533,6 @@ private:
         dsts[i] += tid*EltPerLine;
       }
     }
-    int offset = tid;
     int eltPerTrip = nthreads*EltPerLine;
     while (nelem > 0) {
       int eltInLine = EltPerLine < nelem ? EltPerLine : nelem;
@@ -569,7 +572,6 @@ private:
         }
       }
       nelem -= eltPerTrip;
-      offset += nthreads;
     }
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_MSCCL_GENERIC_OP_EXIT)
@@ -612,14 +614,14 @@ private:
   __device__  Primitives(
       const int tid, const int nthreads, int const *recvPeers, int const *sendPeers,
       void const *inputBuf, void *outputBuf, uint64_t redOpArg, uint8_t group=0,
-      uint8_t connIndexRecv=0, uint8_t connIndexSend=0, struct ncclWorkElem* e = nullptr, struct ncclWorkElemP2p* p2p = nullptr, int stepSize_=0
+      uint8_t connIndexRecv=0, uint8_t connIndexSend=0, struct ncclWorkElem* e = nullptr,
+      bool userBufReg=false, int stepSize_=0
     ):
     redOp(redOpArg),
     tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), group(group),
     stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL]/NCCL_STEPS/sizeof(ncclLLFifoLine)) {
     auto *channel = &ncclShmem.channel;
     barriers = &ncclShmem.groups[group].barrier;
-    barrier_next = ncclShmem.groups[group].barrier_next;
     // If we are going to support oneshot collNet + LL, then we would need to add connector index here
     int nrecv=0, nsend=0;
     // We compare with Fan::MaxRecv here because this->MaxRecv is always at least 1

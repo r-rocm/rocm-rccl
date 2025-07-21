@@ -5,7 +5,7 @@
  ************************************************************************/
 
 #include "PtrUnion.hpp"
-
+#include "api_trace.h"
 namespace RcclUnitTesting
 {
   size_t DataTypeToBytes(ncclDataType_t const dataType)
@@ -42,26 +42,38 @@ namespace RcclUnitTesting
     return TEST_SUCCESS;
   }
 
-  ErrCode PtrUnion::AllocateGpuMem(size_t const numBytes, bool const useManagedMem)
+  ErrCode PtrUnion::AllocateGpuMem(size_t const numBytes, bool const useManagedMem, bool const userRegistered)
   {
     if (numBytes)
     {
-      if (useManagedMem)
+      if (userRegistered)
       {
-        if (hipMallocManaged(&I1, numBytes) != hipSuccess)
+        if (ncclMemAlloc((void**)&I1, numBytes) != ncclSuccess)
         {
-          ERROR("Unable to allocate managed memory of GPU memory (%lu bytes)\n", numBytes);
+          ERROR("Unable to allocate user managed GPU memory (%lu bytes)\n", numBytes);
           return TEST_FAIL;
         }
       }
       else
       {
-        if (hipMalloc(&I1, numBytes) != hipSuccess)
+        if (useManagedMem)
         {
-          ERROR("Unable to allocate memory of GPU memory (%lu bytes)\n", numBytes);
-          return TEST_FAIL;
+          if (hipMallocManaged(&I1, numBytes) != hipSuccess)
+          {
+            ERROR("Unable to allocate managed memory of GPU memory (%lu bytes)\n", numBytes);
+            return TEST_FAIL;
+          }
+        }
+        else
+        {
+          if (hipMalloc(&I1, numBytes) != hipSuccess)
+          {
+            ERROR("Unable to allocate memory of GPU memory (%lu bytes)\n", numBytes);
+            return TEST_FAIL;
+          }
         }
       }
+
     }
     return TEST_SUCCESS;
   }
@@ -80,11 +92,14 @@ namespace RcclUnitTesting
     return TEST_SUCCESS;
   }
 
-  ErrCode PtrUnion::FreeGpuMem()
+  ErrCode PtrUnion::FreeGpuMem(bool const userRegistered)
   {
     if (this->ptr != nullptr)
     {
-      hipFree(this->ptr);
+      if (userRegistered)
+        ncclMemFree(this->ptr);
+      else
+        hipFree(this->ptr);
       this->ptr = nullptr;
     }
     return TEST_SUCCESS;
@@ -133,7 +148,9 @@ namespace RcclUnitTesting
 
     for (int i = 0; i < numElements; i++)
     {
-      int    valueI = (globalRank + i) % 256;
+      // Due to floating-point math not being commutative, the ordering in which ranks are added will matter.
+      // For lower-precision data types, we initialize all ranks to the same value to avoid this
+      int    valueI = (dataType == ncclFp8E4M3 || dataType == ncclFp8E5M2)? (i % 16) :(globalRank + i) % 256;
       double valueF = 1.0L/((double)valueI+1.0L);
       temp.Set(dataType, i, valueI, valueF);
     }

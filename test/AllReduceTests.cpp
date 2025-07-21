@@ -4,6 +4,7 @@
  * See LICENSE.txt for license information
  ************************************************************************/
 #include "TestBed.hpp"
+#include "CallCollectiveForked.hpp"
 
 namespace RcclUnitTesting
 {
@@ -13,7 +14,7 @@ namespace RcclUnitTesting
 
     // Configuration
     std::vector<ncclFunc_t>     const funcTypes       = {ncclCollAllReduce};
-    std::vector<ncclDataType_t> const dataTypes       = {ncclFloat32};
+    std::vector<ncclDataType_t> const dataTypes       = {ncclFloat32, ncclFp8E4M3, ncclFp8E5M2};
     std::vector<ncclRedOp_t>    const redOps          = {ncclSum};
     std::vector<int>            const roots           = {0};
     std::vector<int>            const numElements     = {393216, 384};
@@ -102,6 +103,33 @@ namespace RcclUnitTesting
     testBed.Finalize();
   }
 
+  TEST(AllReduce, Channels)
+  {
+    TestBed testBed;
+    if(testBed.ev.maxGpus >= 8) {
+      if(testBed.ev.isGfx94) {
+        // Configuration
+        std::vector<ncclFunc_t>     const funcTypes       = {ncclCollAllReduce};
+        std::vector<ncclDataType_t> const dataTypes       = {ncclBfloat16};
+        std::vector<ncclRedOp_t>    const redOps          = {ncclSum};
+        std::vector<int>            const roots           = {0};
+        std::vector<int>            const numElements     = {64 * 1024 * 1024, 1024};
+        std::vector<bool>           const inPlaceList     = {false};
+        std::vector<bool>           const managedMemList  = {false};
+        std::vector<bool>           const useHipGraphList = {false, true};
+        std::vector<const char *>   const channelList     = {"84", "112"};
+        bool                        const enableSweep     = false; 
+        for (auto channel : channelList) {
+          setenv("NCCL_MIN_NCHANNELS", channel, 1);
+          testBed.RunSimpleSweep(funcTypes, dataTypes, redOps, roots, numElements,
+                                inPlaceList, managedMemList, useHipGraphList, enableSweep);
+          testBed.Finalize();
+          unsetenv("NCCL_MIN_NCHANNELS");
+        }
+      }
+    }
+  }
+
   TEST(AllReduce, ManagedMemGraph)
   {
     TestBed testBed;
@@ -166,7 +194,8 @@ namespace RcclUnitTesting
     for (int isMultiProcess : testBed.ev.GetIsMultiProcessList())
     {
       int const numProcesses = isMultiProcess ? totalRanks : 1;
-      testBed.InitComms(TestBed::GetDeviceIdsList(numProcesses, totalRanks));
+      const std::vector<int>& gpuPriorityOrder = testBed.ev.GetGpuPriorityOrder();
+      testBed.InitComms(TestBed::GetDeviceIdsList(numProcesses, totalRanks, gpuPriorityOrder));
 
       for (int dataIdx = 0; dataIdx < dataTypes.size() && isCorrect; ++dataIdx)
       {
@@ -213,5 +242,35 @@ namespace RcclUnitTesting
       testBed.DestroyComms();
     }
     testBed.Finalize();
+  }
+
+  TEST(AllReduce, UserBufferRegistration)
+  {          
+    const int nranks = 8;
+    size_t count = 2048;
+    std::vector<int> sendBuff(count, 0);
+    std::vector<int> recvBuff(count, 0);
+    std::vector<int> expected(count, 0);
+
+    for (int i = 0; i < count; ++i){
+        sendBuff[i] = i;
+        expected[i] = i * nranks;
+    }
+    callCollectiveForked(nranks, ncclCollAllReduce, sendBuff, recvBuff, expected);
+  }
+
+  TEST(AllReduce, ManagedMemUserBufferRegistration)
+  {          
+    const int nranks = 8;
+    size_t count = 2048;
+    std::vector<int> sendBuff(count, 0);
+    std::vector<int> recvBuff(count, 0);
+    std::vector<int> expected(count, 0);
+    const bool use_managed_mem = true;
+    for (int i = 0; i < count; ++i){
+        sendBuff[i] = i;
+        expected[i] = i * nranks;
+    }
+    callCollectiveForked(nranks, ncclCollAllReduce, sendBuff, recvBuff, expected, use_managed_mem);
   }
 }
